@@ -760,6 +760,9 @@ input.glass::placeholder {
 
 /* Terminal Keyword Coloring */
 
+.terminal-package {
+    color: cyan !important;
+}
 .terminal-command {
     color: #ffff92 !important;
 }

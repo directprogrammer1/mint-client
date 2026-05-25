@@ -1,11 +1,76 @@
 const cmdText = document.getElementById("cmd-text");
+const terminalContent = document.getElementById("terminal-content")
 
 class MintTerminal {
     constructor() {
-        this.commands = new Map(); // command name -> command info
-        this.packages = new Map(); // package name -> package instance
+        this.commands = new Map();
+        this.packageCommands = new Map();
+        this.packages = new Map();
+        this.variables = {};
 
         this.prompt = "C:\\>";
+    }
+
+    resolveCommandInfo(commandText) {
+        const rawCommand = String(commandText || "");
+        const dotIndex = rawCommand.indexOf(".");
+
+        if (dotIndex !== -1) {
+            const packageName = rawCommand.slice(0, dotIndex);
+            const commandName = rawCommand.slice(dotIndex + 1);
+
+            if (packageName === "default") {
+                return {
+                    error: "[red]Do not use 'default.command' for default commands."
+                };
+            }
+
+            if (!packageName || !commandName) {
+                return {
+                    error: "[red]Invalid namespaced command. Use [package].[command]"
+                };
+            }
+
+            const packageMap = this.packageCommands.get(packageName.toLowerCase());
+
+            if (!packageMap) {
+                return {
+                    error: `[red]Package '${packageName}' does not exist or has not yet been installed.`
+                };
+            }
+
+            const commandInfo = packageMap.get(commandName.toLowerCase());
+
+            if (!commandInfo) {
+                return {
+                    error: `[red]Package '${packageName}' has no command '${commandName}'.`
+                };
+            }
+
+            return {
+                commandInfo,
+                realCommandName: commandName
+            };
+        }
+
+        const commandInfo = this.commands.get(rawCommand.toLowerCase());
+
+        if (!commandInfo) {
+            return {
+                error: `[red]'${rawCommand}' is not recognized as an internal or external command, operatable program, or batch file.`
+            };
+        }
+
+        if (commandInfo.ambiguous) {
+            return {
+                error: `[red]'${rawCommand}' exists in multiple packages. Use package.${rawCommand} instead.`
+            };
+        }
+
+        return {
+            commandInfo,
+            realCommandName: rawCommand
+        };
     }
 
     installPackage(PackageClass, options = {}) {
@@ -63,25 +128,57 @@ class MintTerminal {
             packageInstance.constructor.commands ||
             {};
 
-        for (const [commandName, methodName] of Object.entries(commandList)) {
-            this.registerCommand(commandName, packageName, methodName);
+        for (const [commandName, commandData] of Object.entries(commandList)) {
+            let methodName;
+            let argCount = null;
+
+            if (Array.isArray(commandData)) {
+                methodName = commandData[0];
+                argCount = commandData[1] ?? null;
+            } else {
+                methodName = commandData;
+            }
+
+            this.registerCommand(commandName, packageName, methodName, argCount);
         }
 
         return packageInstance;
     }
 
-    registerCommand(commandName, packageName, methodName) {
-        const normalized = commandName.toLowerCase();
+    registerCommand(commandName, packageName, methodName, argCount) {
+        const normalizedCommand = commandName.toLowerCase();
+        const normalizedPackage = packageName.toLowerCase();
 
-        if (this.commands.has(normalized)) {
-            throw new Error(`Command already exists: ${commandName}`);
-        }
-
-        this.commands.set(normalized, {
+        const commandInfo = {
             commandName,
             packageName,
-            methodName
-        });
+            methodName,
+            argCount
+        };
+
+        // Store command inside its package namespace
+        if (!this.packageCommands.has(normalizedPackage)) {
+            this.packageCommands.set(normalizedPackage, new Map());
+        }
+
+        const packageCommandMap = this.packageCommands.get(normalizedPackage);
+
+        if (packageCommandMap.has(normalizedCommand)) {
+            throw new Error(`Command already exists in package '${packageName}': ${commandName}`);
+        }
+
+        packageCommandMap.set(normalizedCommand, commandInfo);
+
+        // Also register it globally, unless another package already has this command
+        if (this.commands.has(normalizedCommand)) {
+            this.commands.set(normalizedCommand, {
+                ambiguous: true,
+                commandName
+            });
+            return;
+        }
+
+        this.commands.set(normalizedCommand, commandInfo);
     }
 
     executeCommand(commandSyntax) {
@@ -97,11 +194,35 @@ class MintTerminal {
             return "";
         }
 
-        const commandInfo = this.commands.get(parsed.command.toLowerCase());
+    const resolved = this.resolveCommandInfo(parsed.command);
 
-        if (!commandInfo) {
-            this.writeLines(`[red]'${parsed.command}' is not recognized as an internal or external command, operatable program, or batch file.`);
-            return "";
+    if (resolved.error) {
+        this.writeLines(resolved.error);
+        return "";
+    }
+
+    const commandInfo = resolved.commandInfo;
+    const realCommandName = resolved.realCommandName;
+
+        if (typeof commandInfo.argCount === "number") {
+            if (commandInfo.argCount >= 0 && parsed.args.length !== commandInfo.argCount) {
+                this.writeLines(
+                    `[red]'${parsed.command}' expected ${commandInfo.argCount} arg(s), got ${parsed.args.length}.`
+                );
+                return "";
+            }
+
+            if (commandInfo.argCount === -1) {
+                // -1 means kwargs mode / unlimited key=value options.
+                // Example: command key=value other=something
+                // This blocks random normal args.
+                if (parsed.args.length > 0) {
+                    this.writeLines(
+                        `[red]'${parsed.command}' only accepts key=value arguments.`
+                    );
+                    return "";
+                }
+            }
         }
 
         const pkg = this.packages.get(commandInfo.packageName);
@@ -122,7 +243,9 @@ class MintTerminal {
             terminal: this,
             package: pkg,
             input: commandSyntax,
-            command: parsed.command,
+            command: realCommandName,
+            fullCommand: parsed.command,
+            packageName: commandInfo.packageName,
             args: parsed.args,
             kwargs: parsed.kwargs
         };
@@ -136,10 +259,165 @@ class MintTerminal {
 
             return result;
         } catch (err) {
-            this.writeLines(`[red]Error: ${err.message}`);
+            this.writeLines(`[red] Error: ${err.message}`);
             console.error(err);
             return "";
         }
+    }
+
+    evaluateExpression(tokens) {
+        let pos = 0;
+
+        const parseConcat = () => {
+            let result = parseExpr();
+
+            while (pos < tokens.length && (tokens[pos] === "&&" || tokens[pos] === "||")) {
+                const op = tokens[pos++];
+                const right = parseExpr();
+
+                if (op === "&&") {
+                    result = String(result) + String(right);
+                } else if (op === "||") {
+                    result = result || right;
+                }
+            }
+
+            return result;
+        };
+
+        const parseExpr = () => {
+            let result = parseTerm();
+
+            while (pos < tokens.length && (tokens[pos] === "+" || tokens[pos] === "-")) {
+                const op = tokens[pos++];
+                const right = parseTerm();
+
+                if (typeof result !== "number" || typeof right !== "number") {
+                    throw new Error("Cannot perform arithmetic on non-numeric values");
+                }
+
+                if (op === "+") result += right;
+                else result -= right;
+            }
+
+            return result;
+        };
+
+        const parseTerm = () => {
+            let result = parseFactor();
+
+            while (pos < tokens.length && (tokens[pos] === "*" || tokens[pos] === "/")) {
+                const op = tokens[pos++];
+                const right = parseFactor();
+
+                if (typeof result !== "number" || typeof right !== "number") {
+                    throw new Error("Cannot perform arithmetic on non-numeric values");
+                }
+
+                if (op === "*") {
+                    result *= right;
+                } else {
+                    if (right === 0) throw new Error("Division by zero");
+                    result /= right;
+                }
+            }
+
+            return result;
+        };
+
+        const parseFactor = () => {
+            if (tokens[pos] === "+") {
+                pos++;
+                return parseFactor();
+            }
+
+            if (tokens[pos] === "-") {
+                pos++;
+                const value = parseFactor();
+
+                if (typeof value !== "number") {
+                    throw new Error("Cannot negate a non-number");
+                }
+
+                return -value;
+            }
+
+            if (tokens[pos] === "(") {
+                pos++;
+                const result = parseConcat();
+
+                if (pos >= tokens.length || tokens[pos] !== ")") {
+                    throw new Error("Mismatched parentheses");
+                }
+
+                pos++;
+                return result;
+            }
+
+            return parseValue();
+        };
+
+        const parseValue = () => {
+            if (pos >= tokens.length) {
+                throw new Error("Unexpected end of expression");
+            }
+
+            const token = tokens[pos++];
+
+            if (token.startsWith("{") && token.endsWith("}")) {
+                const inner = token.slice(1, -1);
+                const innerTokens = this.tokenizeCommand(inner, { mathMode: true });
+                return this.evaluateExpression(innerTokens);
+            }
+
+            const resolved = this.resolveNormalToken(token);
+
+            if (
+                typeof resolved === "number" ||
+                (typeof resolved === "string" && resolved.trim() !== "" && !Number.isNaN(Number(resolved)))
+            ) {
+                return Number(resolved);
+            }
+
+            return resolved;
+        };
+
+        const result = parseConcat();
+
+        if (pos < tokens.length) {
+            throw new Error(`Unexpected token: ${tokens[pos]}`);
+        }
+
+        return result;
+    }
+
+    resolveNormalToken(token) {
+        const stripped = this.stripQuotes(String(token));
+        const value = stripped.value;
+
+        if (!stripped.wasQuoted && value.startsWith("$")) {
+            const varName = value.slice(1);
+
+            if (Object.prototype.hasOwnProperty.call(this.variables, varName)) {
+                return this.variables[varName];
+            }
+
+            return value;
+        }
+
+        return value;
+    }
+
+    resolveArgumentToken(token) {
+        token = String(token);
+
+        if (token.startsWith("{") && token.endsWith("}")) {
+            const inner = token.slice(1, -1);
+            const expressionTokens = this.tokenizeExpression(inner);
+            return this.evaluateExpression(expressionTokens, { strictNumbers: true });
+        }
+
+        return this.resolveNormalToken(token);
     }
 
     parseCommand(input) {
@@ -153,28 +431,43 @@ class MintTerminal {
             };
         }
 
-        const command = this.stripQuotes(tokens[0]);
+        const command = this.resolveNormalToken(tokens[0]);
         const args = [];
         const kwargs = {};
 
-        for (let i = 1; i < tokens.length; i++) {
+        let i = 1;
+
+        while (i < tokens.length) {
             const token = tokens[i];
 
-            // key=value, because tokenizer splits into: key, =, value
-            if (tokens[i + 1] === "=" && tokens[i + 2] !== undefined) {
-                const key = this.stripQuotes(token);
-                const value = this.stripQuotes(tokens[i + 2]);
+            if (tokens[i + 1] === "=" && i + 2 < tokens.length) {
+                const key = this.resolveNormalToken(token);
+                const valueToken = tokens[i + 2];
 
-                kwargs[key] = value;
-                i += 2;
+                try {
+                    kwargs[key] = this.resolveArgumentToken(valueToken);
+                } catch (err) {
+                    this.writeLines(`[red]Expression error in '${key}': ${err.message}`);
+                    return { command: "", args: [], kwargs: {} };
+                }
+
+                i += 3;
                 continue;
             }
 
             if (token === "=") {
+                i++;
                 continue;
             }
 
-            args.push(this.stripQuotes(token));
+            try {
+                args.push(this.resolveArgumentToken(token));
+            } catch (err) {
+                this.writeLines(`[red]Expression error in arg: ${err.message}`);
+                return { command: "", args: [], kwargs: {} };
+            }
+
+            i++;
         }
 
         return {
@@ -184,30 +477,227 @@ class MintTerminal {
         };
     }
 
+    tokenizeExpression(input) {
+        const tokens = [];
+        let i = 0;
+
+        const readQuoted = (quoteChar) => {
+            let value = quoteChar;
+            i++;
+
+            while (i < input.length) {
+                const ch = input[i];
+                value += ch;
+                i++;
+
+                if (ch === "\\" && i < input.length) {
+                    value += input[i];
+                    i++;
+                    continue;
+                }
+
+                if (ch === quoteChar) {
+                    break;
+                }
+            }
+
+            return value;
+        };
+
+        while (i < input.length) {
+            const ch = input[i];
+
+            if (/\s/.test(ch)) {
+                i++;
+                continue;
+            }
+
+            if (ch === '"' || ch === "'") {
+                tokens.push(readQuoted(ch));
+                continue;
+            }
+
+            if (ch === "&" && input[i + 1] === "&") {
+                tokens.push("&&");
+                i += 2;
+                continue;
+            }
+
+            if (ch === "|" && input[i + 1] === "|") {
+                tokens.push("||");
+                i += 2;
+                continue;
+            }
+
+            if ("+-*/()".includes(ch)) {
+                tokens.push(ch);
+                i++;
+                continue;
+            }
+
+            let value = "";
+
+            while (i < input.length) {
+                const current = input[i];
+
+                if (/\s/.test(current)) break;
+                if (current === '"' || current === "'") break;
+                if ("+-*/()".includes(current)) break;
+                if (current === "&" && input[i + 1] === "&") break;
+                if (current === "|" && input[i + 1] === "|") break;
+
+                value += current;
+                i++;
+            }
+
+            if (value) {
+                tokens.push(value);
+            } else {
+                tokens.push(input[i]);
+                i++;
+            }
+        }
+
+        return tokens;
+    }
+
     tokenizeCommand(input) {
         const tokens = [];
+        let i = 0;
 
-        // quoted strings, equals sign, or normal words
-        const regex = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|=|[^\s='"]+/g;
+        const readQuoted = (quoteChar) => {
+            let value = quoteChar;
+            i++;
 
-        let match;
+            while (i < input.length) {
+                const ch = input[i];
+                value += ch;
+                i++;
 
-        while ((match = regex.exec(input)) !== null) {
-            tokens.push(match[0]);
+                if (ch === "\\" && i < input.length) {
+                    value += input[i];
+                    i++;
+                    continue;
+                }
+
+                if (ch === quoteChar) {
+                    break;
+                }
+            }
+
+            return value;
+        };
+
+        const readBraced = () => {
+            let depth = 0;
+            let value = "";
+
+            while (i < input.length) {
+                const ch = input[i];
+
+                if (ch === '"' || ch === "'") {
+                    value += readQuoted(ch);
+                    continue;
+                }
+
+                value += ch;
+
+                if (ch === "{") {
+                    depth++;
+                } else if (ch === "}") {
+                    depth--;
+
+                    if (depth === 0) {
+                        i++;
+                        break;
+                    }
+                }
+
+                i++;
+            }
+
+            return value;
+        };
+
+        while (i < input.length) {
+            const ch = input[i];
+
+            if (/\s/.test(ch)) {
+                i++;
+                continue;
+            }
+
+            if (ch === '"' || ch === "'") {
+                tokens.push(readQuoted(ch));
+                continue;
+            }
+
+            // Keep the whole {...} as one processed argument.
+            if (ch === "{") {
+                tokens.push(readBraced());
+                continue;
+            }
+
+            // These still split globally.
+            if (ch === "&" && input[i + 1] === "&") {
+                tokens.push("&&");
+                i += 2;
+                continue;
+            }
+
+            if (ch === "|" && input[i + 1] === "|") {
+                tokens.push("||");
+                i += 2;
+                continue;
+            }
+
+            // Only equals splits globally for kwargs.
+            if (ch === "=") {
+                tokens.push("=");
+                i++;
+                continue;
+            }
+
+            let value = "";
+
+            while (i < input.length) {
+                const current = input[i];
+
+                if (/\s/.test(current)) break;
+                if (current === '"' || current === "'") break;
+                if (current === "{") break;
+                if (current === "}") break;
+                if (current === "=") break;
+
+                if (current === "&" && input[i + 1] === "&") break;
+                if (current === "|" && input[i + 1] === "|") break;
+
+                // IMPORTANT:
+                // Do NOT break on + - * / ( ) here.
+                // Outside {...}, they are just normal argument characters.
+
+                value += current;
+                i++;
+            }
+
+            if (value) {
+                tokens.push(value);
+            } else {
+                tokens.push(input[i]);
+                i++;
+            }
         }
 
         return tokens;
     }
 
     stripQuotes(value) {
-        if (
+        const wasQuoted = (
             (value.startsWith('"') && value.endsWith('"')) ||
             (value.startsWith("'") && value.endsWith("'"))
-        ) {
-            return value.slice(1, -1);
-        }
-
-        return value;
+        );
+        const stripped = wasQuoted ? value.slice(1, -1) : value;
+        return { value: stripped, wasQuoted };
     }
 
     parseColorSegments(text) {
@@ -319,18 +809,23 @@ class MintTerminal {
 
 class CorePackage {
     static packageInfo = {
-        "name": "core",
-        "version": "1.0.0"
+        "name": "default",
+        "version": "1.0.2"
     };
 
     static commands = {
-        help: "help",
-        clear: "clear",
-        cls: "clear",
-        log: "log",
-        packages: "packages",
-        commands: "listCommands",
-        version: "getVer"
+        help: ["help", -1],
+        clear: ["clear", 0],
+        cls: ["clear", 0],
+        log: ["log", 1],
+        packages: ["packages", 0],
+        commands: ["listCommands", 0],
+        version: ["getVer", 1],
+
+        newvar: ["newvar", 1],
+        setvar: ["setvar", 2],
+        delvar: ["delvar", 1],
+        vars: ["listvars", 0]
     };
 
     constructor(terminal) {
@@ -339,14 +834,19 @@ class CorePackage {
 
     help(ctx) {
         return [
-            "[#ffff92]Available commands:",
+            "[#ffff92]Available internal commands:",
             "\n/ ----- Core ----- /\n\n",
             "[white]help - [gray]Help command, lists default commands with explanations",
             "[white]clear / cls - [gray]Clear all content in terminal",
             "[white]log {text} - [gray]Logs text to terminal",
             "[white]packages - [gray]List all currently installed packages",
             "[white]commands - [gray]List all current available internal and external commands.",
-            "[white]version {package} - [gray]Writes version of selected package"
+            "[white]version {package} - [gray]Writes version of selected package",
+            "\n / ----- Variables ----- /\n\n",
+            "[white]newvar {varname} - [gray]Defines a new variable in memory. Note: spaces are automatically replaced with '_'.",
+            "[white]setvar {varname, value} - [gray]Sets the value of a variable. Type is the type, such as int, str or other.",
+            "[white]delvar {varname} - [gray]Deletes a variable from memory. Variable must exist. Use 'delvar all' to clear all variables.",
+            "[white]vars - [gray]Lists all existing variables."
         ];
     }
 
@@ -366,11 +866,7 @@ class CorePackage {
     }
 
     log(ctx) {
-        if (ctx.kwargs.text) {
-            return ctx.kwargs.text;
-        }
-
-        return ctx.args.join(" ");
+        return ctx.args[0]
     }
 
     packages(ctx) {
@@ -379,8 +875,35 @@ class CorePackage {
     }
 
     listCommands(ctx) {
-        return [...ctx.terminal.commands.keys()]
-            .map(name => `[cyan]${name}`);
+        const groups = new Map();
+
+        for (const [commandName, commandInfo] of ctx.terminal.commands.entries()) {
+            const packageName = commandInfo.packageName || "default";
+
+            if (!groups.has(packageName)) {
+                groups.set(packageName, []);
+            }
+
+            groups.get(packageName).push(commandName);
+        }
+
+        const lines = [];
+
+        for (const [packageName, commands] of groups.entries()) {
+            if (packageName === "default") {
+                lines.push("[#0f0]default commands\n\n");
+            } else {
+                lines.push(`\n[cyan]'${packageName}' package\n\n`);
+            }
+
+            commands.forEach(command => {
+                lines.push(`[yellow]${command}`);
+            });
+
+            lines.push("");
+        }
+
+        return lines;
     }
     getVer(ctx) {
         const packageName = ctx.args[0];
@@ -403,6 +926,49 @@ class CorePackage {
 
         return `[yellow]${info.name} [white]is version [yellow]${info.version || "unknown"}`;
     }
+    newvar(ctx) {
+        const normalized = ctx.args[0].replace(" ", "_");
+
+        if (normalized in ctx.terminal.variables) {
+            return `[red]Variable named '${normalized}' already exists.`;
+        }
+
+        ctx.terminal.variables[normalized] = "";
+        return `[#0f0]Variable '${normalized}' created.`;
+    }
+    setvar(ctx) {
+        if (!(ctx.args[0] in ctx.terminal.variables)) return `[red]'${ctx.args[0]}' does not exist. Use newvar to create it.`;
+
+        ctx.terminal.variables[ctx.args[0]] = ctx.args[1];
+        return `[#0f0]Variable '${ctx.args[0]}' assigned to value '${ctx.args[1]}'`;
+    }
+    delvar(ctx) {
+        if (!ctx.args[0] in ctx.terminal.variables) return `'${ctx.args[0]}' does not exist. Use newvar to create it.`;
+        if (ctx.args[0] === "all") {
+            ctx.terminal.variables = {};
+            return `[#0f0]All variables deleted.`;
+        }
+
+        delete ctx.terminal.variables[ctx.args[0]];
+        return `[#0f0]Variable '${ctx.args[0]}' deleted.`;
+    }
+    listvars(ctx) {
+        const vars = ctx.terminal.variables;
+
+        if (!vars || typeof vars !== "object" || Array.isArray(vars)) {
+            return "[red]No valid variables object exists on terminal.";
+        }
+
+        const entries = Object.entries(vars);
+
+        if (entries.length === 0) {
+            return "[gray]No variables set.";
+        }
+
+        return entries.map(([name, value]) => {
+            return `[#0066ff]${name}: [white]${String(value).length > 0 ? String(value) : "[gray]null"}`;
+        });
+    }
 }
 
 class SettingsPackage {
@@ -412,7 +978,7 @@ class SettingsPackage {
     }
 
     static commands = {
-        set: "set"
+        set: ["set", -1]
     };
 
     constructor(terminal) {
@@ -448,16 +1014,49 @@ class SettingsPackage {
     }
 }
 
+class VmPackage {
+    // first get the base client.js thing
+
+    static packageInfo = {
+        "name": "vm",
+        "version": "1.0.0",
+    }
+    static commands = {
+        "setvar": ["setVmVar", 3],
+        "setusername": ["setVmUser", 1],
+        "username": ["getVmUser", 0]
+    }
+
+    setVmVar(ctx) {
+        window.mint_base_client.setVar(ctx.args[0], ctx.args[1], ctx.args[2]);
+        return `[white] Variable '[yellow]${ctx.args[0]}[white]' of target [yellow]#${ctx.args[2]}[white] set to '[yellow]${ctx.args[1]}[white]'`;
+    }
+    setVmUser(ctx) {
+        window.mint_base_client.setUsername(ctx.args[0]);
+        return `[white] Username set to '[yellow]${ctx.args[0]}[white]'`;
+    }
+    getVmUser(ctx) {
+        user = window.mint_base_client.getUsername();
+
+        if (!user || user.length === 0) {
+            return '[red] Failed to get username. Username is either unset or empty.';
+        }
+
+        return `[yellow]${user}`;
+    }
+}
+
 window.MintTerminal = MintTerminal;
 
 window.terminal = new MintTerminal();
 
 terminal.installPackage(CorePackage);
 terminal.installPackage(SettingsPackage);
+terminal.installPackage(VmPackage)
 
 terminal.writeLines(
-    "[cyan]Mint | License: MIT | Version: 1.0.0\n" +
-    "[#ffff92]Welcome to Mint Terminal (v1.0.0). Use 'help' for information on commands.\n\n"
+    "[cyan]Mint | License: MIT | Version: 1.0.1\n" +
+    "[#ffff92]Welcome to Mint Terminal (v1.0.1). Use 'help' for information on commands.\n\n"
 );
 
 function runCommand(command) {

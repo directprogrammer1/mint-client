@@ -4,24 +4,12 @@ const mintLog = (content, type = "log") => {
     }
 };
 
+// DEFAULT CLIENT (set variables & other)
+
 class MintClient {
     constructor() {
         this.vm = null;
-        this.player = {
-            multipliers: {
-                moveSpeed: 1,
-                jump: 1,
-                gravity: 1,
-                speed: 1,
-                defaultSpeed: 50,
-            },
-
-            setSpeed: this.setSpeed.bind(this),
-            setUsername: this.setUsername.bind(this),
-            getUsername: this.getUsername.bind(this),
-            setVar: this.setVar.bind(this),
-            getVariable: this.getVariable.bind(this)
-        };
+        this.cloneLimit = 300;
     }
 
     init(vm) {
@@ -105,19 +93,14 @@ class MintClient {
         return this.vm.runtime.ioDevices.userData._username;
     }
 
-    setSpeed(multiplier) {
-        if (!this.requireVM()) return;
-
-        this.player.multipliers.defaultSpeed =
-            Number(this.player.multipliers.defaultSpeed) ||
-            Number(this.getVariable("Speed")?.value) ||
-            50;
-
-        this.player.multipliers.speed = multiplier;
-        this.setVar("Speed", this.player.multipliers.defaultSpeed * multiplier);
-
-        mintLog(`Speed multiplier set to: ${multiplier}`, "info");
+    setCloneLimit(count = 300) {
+        if (!this.requireVM()) return null;
+        this.vm.runtime.clonesAvailable = function () {
+            return this._cloneCounter < count;
+        };
+        this.cloneLimit = count;
+        mintLog(`Clone limit set to: ${count}`, "info");
     }
 }
 
-window.MintClient = MintClient;
+window.mint_base_client = new MintClient();

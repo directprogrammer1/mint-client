@@ -1,4 +1,3 @@
-const cmdText = document.getElementById('cmd-text');
 cmdText.setAttribute('contenteditable', 'plaintext-only');
 cmdText.spellcheck = false;
 cmdText.style.whiteSpace = 'pre-wrap';
@@ -65,80 +64,294 @@ function isWhitespaceToken(token) {
     return /^\s+$/.test(token);
 }
 
-function getHighlightClass(word, tokenIndex, isWhitespace, prevToken, nextToken) {
-    const symbols = ["=", "&&", "||"]
-    if (isWhitespace) {
-        return '';
+function tokenizeHighlightLine(line) {
+    const tokens = [];
+    let i = 0;
+    let normalTokenIndex = 0;
+
+    const push = (text, type = "word", forcedTokenIndex = undefined) => {
+        const whitespace = type === "whitespace";
+
+        tokens.push({
+            text,
+            type,
+            whitespace,
+            tokenIndex: whitespace
+                ? null
+                : forcedTokenIndex ?? normalTokenIndex++
+        });
+    };
+
+    const readQuoted = (quoteChar) => {
+        let value = quoteChar;
+        i++;
+
+        while (i < line.length) {
+            const ch = line[i];
+            value += ch;
+            i++;
+
+            if (ch === "\\" && i < line.length) {
+                value += line[i];
+                i++;
+                continue;
+            }
+
+            if (ch === quoteChar) {
+                break;
+            }
+        }
+
+        return value;
+    };
+
+    const readNormalWord = () => {
+        let value = "";
+
+        while (i < line.length) {
+            const ch = line[i];
+
+            if (/\s/.test(ch)) break;
+            if (ch === '"' || ch === "'") break;
+            if (ch === "{") break;
+            if (ch === "=") break;
+            if (ch === "&" && line[i + 1] === "&") break;
+            if (ch === "|" && line[i + 1] === "|") break;
+
+            value += ch;
+            i++;
+        }
+
+        return value;
+    };
+
+    const readMathWord = () => {
+        let value = "";
+
+        while (i < line.length) {
+            const ch = line[i];
+
+            if (/\s/.test(ch)) break;
+            if (ch === '"' || ch === "'") break;
+            if (ch === "}") break;
+            if ("+-*/()".includes(ch)) break;
+            if (ch === "&" && line[i + 1] === "&") break;
+            if (ch === "|" && line[i + 1] === "|") break;
+
+            value += ch;
+            i++;
+        }
+
+        return value;
+    };
+
+    const readBracedMath = () => {
+        push("{", "symbol");
+        i++;
+
+        while (i < line.length) {
+            const ch = line[i];
+
+            if (/\s/.test(ch)) {
+                let value = "";
+                while (i < line.length && /\s/.test(line[i])) {
+                    value += line[i];
+                    i++;
+                }
+                push(value, "whitespace");
+                continue;
+            }
+
+            if (ch === '"' || ch === "'") {
+                push(readQuoted(ch), "string");
+                continue;
+            }
+
+            if (ch === "}") {
+                push("}", "symbol");
+                i++;
+                return;
+            }
+
+            if (ch === "&" && line[i + 1] === "&") {
+                push("&&", "symbol");
+                i += 2;
+                continue;
+            }
+
+            if (ch === "|" && line[i + 1] === "|") {
+                push("||", "symbol");
+                i += 2;
+                continue;
+            }
+
+            if ("+-*/()".includes(ch)) {
+                push(ch, "symbol");
+                i++;
+                continue;
+            }
+
+            const word = readMathWord();
+
+            if (word) {
+                push(word, classifyWord(word));
+            } else {
+                push(line[i], "word");
+                i++;
+            }
+        }
+    };
+
+    const classifyWord = (word) => {
+        if (/^("[^"]*"|'[^']*')$/.test(word)) {
+            return "string";
+        }
+
+        if (/^\$[A-Za-z_][A-Za-z0-9_]*$/.test(word)) {
+            return "variable";
+        }
+
+        return "word";
+    };
+
+    const pushNormalWord = (word) => {
+        // Only split package.command on the first real token
+        if (normalTokenIndex === 0) {
+            const dotIndex = word.indexOf(".");
+
+            if (dotIndex > 0 && dotIndex < word.length - 1) {
+                const packageName = word.slice(0, dotIndex);
+                const commandName = word.slice(dotIndex + 1);
+
+                push(packageName, "package", 0);
+                push(".", "namespace-dot", 0);
+                push(commandName, "command", 0);
+
+                normalTokenIndex++;
+                return;
+            }
+        }
+
+        push(word, classifyWord(word));
+    };
+
+    while (i < line.length) {
+        const ch = line[i];
+
+        if (/\s/.test(ch)) {
+            let value = "";
+
+            while (i < line.length && /\s/.test(line[i])) {
+                value += line[i];
+                i++;
+            }
+
+            push(value, "whitespace");
+            continue;
+        }
+
+        if (ch === '"' || ch === "'") {
+            push(readQuoted(ch), "string");
+            continue;
+        }
+
+        if (ch === "{") {
+            readBracedMath();
+            continue;
+        }
+
+        if (ch === "&" && line[i + 1] === "&") {
+            push("&&", "symbol");
+            i += 2;
+            continue;
+        }
+
+        if (ch === "|" && line[i + 1] === "|") {
+            push("||", "symbol");
+            i += 2;
+            continue;
+        }
+
+        if (ch === "=") {
+            push("=", "symbol");
+            i++;
+            continue;
+        }
+
+        const word = readNormalWord();
+
+        if (word) {
+            pushNormalWord(word);
+        } else {
+            push(line[i], "word");
+            i++;
+        }
     }
-    if (tokenIndex === 0) {
-        return 'terminal-command';
-    }
-    if (/^("[^"]*"|'[^']*')$/.test(word)) {
-        return 'terminal-string';
-    }
-    if (symbols.includes(word)) {
-        return 'terminal-symbol';
-    }
-    if (nextToken === "=") {
-        // it's an argument
-        return 'terminal-argument';
-    }
-    if (word[0] === "$") {
-        return 'terminal-var';
-    }
-    return '';
+
+    return tokens;
 }
 
-window.getHighlightClass = window.getHighlightClass || getHighlightClass;
+function getHighlightClass(token, tokens) {
+    if (token.whitespace) {
+        return "";
+    }
 
-function resolveHighlightClass(word, tokenIndex, isWhitespace, prevToken, nextToken) {
-    const resolver = window.getHighlightClass || getHighlightClass;
-    return resolver(word, tokenIndex, isWhitespace, prevToken, nextToken) || '';
+    if (token.type === "package") {
+        return "terminal-package";
+    }
+
+    if (token.type === "namespace-dot") {
+        return "";
+    }
+
+    if (token.type === "command") {
+        return "terminal-command";
+    }
+
+    if (token.tokenIndex === 0) {
+        return "terminal-command";
+    }
+
+    if (token.type === "string") {
+        return "terminal-string";
+    }
+
+    if (token.type === "symbol") {
+        return "terminal-symbol";
+    }
+
+    if (token.type === "variable") {
+        return "terminal-var";
+    }
+
+    const nextRealToken = tokens.find(t => t.tokenIndex === token.tokenIndex + 1);
+
+    if (nextRealToken && nextRealToken.text === "=") {
+        return "terminal-argument";
+    }
+
+    return "";
 }
 
 function highlightText(text) {
-    const lines = text.split('\n');
+    const lines = text.split("\n");
+
     return lines
         .map((line) => {
-            const parts = [];
-            const tokenRegex = /"[^"]*"|'[^']*'|=|\s+|[^\s='"]+/g;
-            const tokens = [];
-            let match;
-            while ((match = tokenRegex.exec(line)) !== null) {
-                tokens.push({ text: match[0], whitespace: isWhitespaceToken(match[0]) });
-            }
+            const tokens = tokenizeHighlightLine(line);
 
-            let lastIndex = 0;
-            let tokenIndex = 0;
-            tokens.forEach((tokenObj, i) => {
-                const token = tokenObj.text;
-                if (match && tokenObj) {
-                    // keep lastIndex advancing in sequence instead of using match.index after the first loop
-                }
-                const tokenStart = line.indexOf(token, lastIndex);
-                if (tokenStart > lastIndex) {
-                    parts.push(escapeHtml(line.slice(lastIndex, tokenStart)));
-                }
-                const whitespace = tokenObj.whitespace;
-                const cls = resolveHighlightClass(token, tokenIndex, whitespace, tokens[i - 1]?.text || '', tokens[i + 1]?.text || '');
-                const escaped = escapeHtml(token);
-                if (cls) {
-                    parts.push(`<span class="${escapeHtml(cls)}">${escaped}</span>`);
-                } else {
-                    parts.push(escaped);
-                }
-                if (!whitespace) {
-                    tokenIndex += 1;
-                }
-                lastIndex = tokenStart + token.length;
-            });
+            return tokens.map((token) => {
+                const escaped = escapeHtml(token.text);
+                const cls = getHighlightClass(token, tokens);
 
-            if (lastIndex < line.length) {
-                parts.push(escapeHtml(line.slice(lastIndex)));
-            }
-            return parts.join('');
+                if (!cls) {
+                    return escaped;
+                }
+
+                return `<span class="${escapeHtml(cls)}">${escaped}</span>`;
+            }).join("");
         })
-        .join('<br>');
+        .join("<br>");
 }
 
 function updateHighlight() {
@@ -161,9 +374,6 @@ cmdText.addEventListener('paste', (event) => {
     document.execCommand('insertText', false, text);
 });
 
-// terminal/terminal.js
-
-const terminalContent = document.getElementById("terminal-content");
 const fakeCaret = document.getElementById("fake-caret");
 
 terminalContent.addEventListener("mousedown", (e) => {
