@@ -1,3 +1,7 @@
+if (typeof(cmdText) === "undefined") {
+    const cmdText = document.getElementById("cmd-text");
+}
+
 cmdText.setAttribute('contenteditable', 'plaintext-only');
 cmdText.spellcheck = false;
 cmdText.style.whiteSpace = 'pre-wrap';
