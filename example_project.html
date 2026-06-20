@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Example project (AI)</title>
+  <meta charset="UTF-8" />
+  <style>
+    body {
+      margin: 0;
+      background: #f5f7fa;
+      color: #1f2937;
+      font-family: Arial, sans-serif;
+    }
+
+    #bar {
+      display: flex;
+      gap: 8px;
+      padding: 10px;
+      background: #ffffff;
+      border-bottom: 1px solid #d1d5db;
+      box-shadow: inset 0 -1px 0 #e5e7eb;
+    }
+
+    #project-url {
+      flex: 1;
+      padding: 8px;
+      background: #ffffff;
+      color: #111827;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+    }
+
+    button {
+      padding: 8px 12px;
+      background: #e5e7eb;
+      color: #111827;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #d1d5db;
+    }
+
+    #project {
+      width: 480px;
+      height: 360px;
+      margin: 20px;
+      background: #ffffff;
+      border: 1px solid #d1d5db;
+    }
+
+    #log {
+      margin: 20px;
+      padding: 10px;
+      background: #ffffff;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      white-space: pre-wrap;
+      font-family: monospace;
+      color: #111827;
+      max-height: 180px;
+      overflow: auto;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="bar">
+    <input
+      id="project-url"
+      value="https://turbowarp.org/60917032"
+      placeholder="Scratch/TurboWarp URL, project ID, or direct .sb3 URL"
+    />
+
+    <button id="load-btn">Load Project</button>
+    <button id="flag-btn">Green Flag</button>
+    <button id="stop-btn">Stop</button>
+  </div>
+
+  <div id="project"></div>
+
+  <div id="log"></div>
+
+  <!-- Only external script: TurboWarp Scaffolding CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@turbowarp/scaffolding@0.2.0/dist/scaffolding-min.js"></script>
+
+  <script>
+    const logBox = document.getElementById("log");
+
+    function log(...args) {
+      console.log(...args);
+      logBox.textContent += args.map(String).join(" ") + "\n";
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    // Create Scaffolding instance
+    const scaffolding = new Scaffolding.Scaffolding();
+
+    // These should be set before setup()
+    scaffolding.width = 480;
+    scaffolding.height = 360;
+    scaffolding.resizeMode = "preserve-ratio";
+    scaffolding.editableLists = true;
+
+    scaffolding.setup();
+    scaffolding.appendTo(document.getElementById("project"));
+
+    // Expose VM globally for your mod client testing
+    window.scaffolding = scaffolding;
+    window.vm = scaffolding.vm;
+    window.runtime = scaffolding.vm.runtime;
+
+    log("Scaffolding initialized.");
+    log("VM exposed as window.vm");
+
+    // Required for Scratch assets: costumes, sounds, SVGs, etc.
+    const storage = scaffolding.storage;
+
+    storage.addWebStore(
+      [
+        storage.AssetType.ImageVector,
+        storage.AssetType.ImageBitmap,
+        storage.AssetType.Sound
+      ],
+      asset =>
+        `https://assets.scratch.mit.edu/internalapi/asset/${asset.assetId}.${asset.dataFormat}/get/`
+    );
+
+    function getProjectId(input) {
+      input = input.trim();
+
+      // Plain project ID
+      if (/^\d+$/.test(input)) {
+        return input;
+      }
+
+      // Scratch URL
+      let match = input.match(/scratch\.mit\.edu\/projects\/(\d+)/);
+      if (match) {
+        return match[1];
+      }
+
+      // TurboWarp URL
+      match = input.match(/turbowarp\.org\/(\d+)/);
+      if (match) {
+        return match[1];
+      }
+
+      return null;
+    }
+
+    async function fetchScratchProject(projectId) {
+      log("Fetching Scratch metadata for project", projectId);
+
+      const metaRes = await fetch(
+        `https://trampoline.turbowarp.org/api/projects/${projectId}`
+      );
+
+      if (metaRes.status === 404) {
+        throw new Error("Project is unshared or does not exist.");
+      }
+
+      if (!metaRes.ok) {
+        throw new Error(`Metadata fetch failed: HTTP ${metaRes.status}`);
+      }
+
+      const meta = await metaRes.json();
+      const token = meta.project_token;
+
+      log("Fetching project data...");
+
+      const projectRes = await fetch(
+        `https://projects.scratch.mit.edu/${projectId}?token=${token}`
+      );
+
+      if (!projectRes.ok) {
+        throw new Error(`Project fetch failed: HTTP ${projectRes.status}`);
+      }
+
+      return await projectRes.arrayBuffer();
+    }
+
+    async function fetchDirectProject(url) {
+      log("Fetching direct project URL...");
+
+      const res = await fetch(url);
+
+      if (!res.ok) {
+        throw new Error(`Direct project fetch failed: HTTP ${res.status}`);
+      }
+
+      return await res.arrayBuffer();
+    }
+
+    async function getProjectData(input) {
+      const projectId = getProjectId(input);
+
+      if (projectId) {
+        return await fetchScratchProject(projectId);
+      }
+
+      // Direct .sb3 URL
+      // Must allow CORS or browser will block it.
+      return await fetchDirectProject(input);
+    }
+
+    async function loadProjectFromInput(input, updateUrl = true) {
+      input = input.trim();
+
+      if (!input) {
+        throw new Error("No project URL or ID provided.");
+      }
+
+      log("");
+      log("Loading:", input);
+
+      // Stop current project before replacing it
+      scaffolding.stopAll();
+
+      const projectData = await getProjectData(input);
+
+      await scaffolding.loadProject(projectData);
+
+      log("Project loaded.");
+
+      // Change your own browser URL, like:
+      // http://localhost:8000/?project=60917032
+      if (updateUrl) {
+        const newUrl = new URL(window.location.href);
+        newUrl.searchParams.set("project", input);
+        history.pushState({ project: input }, "", newUrl);
+      }
+
+      // Your mod hooks can run here
+      onProjectLoaded();
+
+      scaffolding.greenFlag();
+    }
+
+    function onProjectLoaded() {
+      log("Running mod-client hooks...");
+
+      for (const target of vm.runtime.targets) {
+        const name = target.isStage ? "Stage" : target.sprite?.name;
+        log("Target:", name);
+      }
+
+      // Example modification:
+      // Enable turbo mode after every loaded project
+      vm.setTurboMode(true);
+
+      log("Turbo mode enabled.");
+    }
+
+    // Buttons
+    document.getElementById("load-btn").addEventListener("click", () => {
+      const input = document.getElementById("project-url").value;
+
+      loadProjectFromInput(input).catch(err => {
+        console.error(err);
+        log("ERROR:", err.message);
+      });
+    });
+
+    document.getElementById("flag-btn").addEventListener("click", () => {
+      scaffolding.greenFlag();
+      log("Green flag clicked.");
+    });
+
+    document.getElementById("stop-btn").addEventListener("click", () => {
+      scaffolding.stopAll();
+      log("Stopped.");
+    });
+
+    // Back/forward browser buttons reload the project from URL state
+    window.addEventListener("popstate", () => {
+      const params = new URLSearchParams(window.location.search);
+      const project = params.get("project");
+
+      if (project) {
+        document.getElementById("project-url").value = project;
+        loadProjectFromInput(project, false).catch(err => {
+          console.error(err);
+          log("ERROR:", err.message);
+        });
+      }
+    });
+
+    // Auto-load from URL:
+    // http://localhost:8000/?project=60917032
+    // http://localhost:8000/?project=https://turbowarp.org/60917032
+    const params = new URLSearchParams(window.location.search);
+    const startupProject = params.get("project");
+
+    if (startupProject) {
+      document.getElementById("project-url").value = startupProject;
+      loadProjectFromInput(startupProject, false).catch(err => {
+        console.error(err);
+        log("ERROR:", err.message);
+      });
+    }
+
+    // Example external-ish mod API exposed globally
+    window.modClient = {
+      loadProject: loadProjectFromInput,
+
+      setVariable(targetName, variableName, value) {
+        const target = vm.runtime.targets.find(t => {
+          if (targetName === "Stage" && t.isStage) return true;
+          return t.sprite && t.sprite.name === targetName;
+        });
+
+        if (!target) {
+          throw new Error(`Target not found: ${targetName}`);
+        }
+
+        const variable = Object.values(target.variables).find(v => {
+          return v.name === variableName;
+        });
+
+        if (!variable) {
+          throw new Error(`Variable not found: ${variableName}`);
+        }
+
+        variable.value = value;
+        log(`Set ${targetName}.${variableName} = ${value}`);
+      }
+    };
+  </script>
+<script src="/assets/js/injector.js"></script>
+</body>
+</html>

@@ -1,5 +1,9 @@
 const cmdText = document.getElementById("cmd-text");
-const terminalContent = document.getElementById("terminal-content")
+const terminalContent = document.getElementById("terminal-content");
+
+terminalContent.addEventListener("click", () => {
+    cmdText.focus({preventScroll: true});
+});
 
 class MintTerminal {
     constructor() {
@@ -1058,7 +1062,3 @@ terminal.writeLines(
     "[cyan]Mint | License: MIT | Version: 1.0.1\n" +
     "[#ffff92]Welcome to Mint Terminal (v1.0.1). Use 'help' for information on commands.\n\n"
 );
-
-function runCommand(command) {
-    return terminal.executeCommand(command);
-}

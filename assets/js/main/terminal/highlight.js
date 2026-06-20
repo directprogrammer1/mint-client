@@ -1,5 +1,13 @@
-if (typeof(cmdText) === "undefined") {
-    const cmdText = document.getElementById("cmd-text");
+try {
+    log(`Command text element found: ${cmdText}`, "info");
+} catch (e) {
+    cmdText = document.getElementById("cmd-text");
+}
+
+try {
+    log(`Terminal content element found: ${terminalContent}`, "info");
+} catch (e) {
+    terminalContent = document.getElementById("terminal-content");
 }
 
 cmdText.setAttribute('contenteditable', 'plaintext-only');
@@ -378,32 +386,6 @@ cmdText.addEventListener('paste', (event) => {
     document.execCommand('insertText', false, text);
 });
 
-const fakeCaret = document.getElementById("fake-caret");
-
-terminalContent.addEventListener("mousedown", (e) => {
-    if (!terminalContent.contains(e.target)) {
-        fakeCaret.style.display = "none";
-        return;
-    }
-
-    if (e.target === terminalContent || e.target === fakeCaret || (e.target.classList && e.target.classList.contains('terminal-row'))) {
-        cmdText.focus();
-        const range = document.createRange();
-        range.selectNodeContents(cmdText);
-        range.collapse(false);
-        const selection = window.getSelection();
-        selection.removeAllRanges();
-        selection.addRange(range);
-        fakeCaret.style.display = "inline-block";
-        e.preventDefault();
-        return;
-    }
-});
-
-terminalContent.addEventListener("click", () => {
-    cmdText.focus();
-    fakeCaret.style.display = "inline-block";
-});
 
 cmdText.addEventListener("dragstart", (e) => {
     e.preventDefault();
@@ -442,6 +424,10 @@ function writeCommandFromInput() {
 
     terminalContent.insertBefore(line, inputRow);
     terminalContent.scrollTop = terminalContent.scrollHeight;
+}
+
+function runCommand(command) {
+    return terminal.executeCommand(command);
 }
 
 function handleEnterKey(e) {

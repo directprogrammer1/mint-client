@@ -183,8 +183,8 @@ async function loadChatMessages() {
     }
 }
 
-const chatClose = document.querySelectorAll('[name="drag-close"]')[0];
-const chatWindow = document.querySelectorAll('[name="drag-move"]')[0];
+const chatClose = document.querySelector('[name="drag-close"][data-name="chat"]');
+const chatWindow = document.querySelector('[name="drag-move"][data-name="chat"]');
 const chatBtn = document.getElementById("mint-chat-btn");
 
 chatClose.addEventListener("click", () => {

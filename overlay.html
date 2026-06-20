@@ -1,6 +1,5 @@
 
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope" />
-<link rel="stylesheet" href="https://directprogrammer1.github.io/mint-client/assets/css/style.css" />
 <!-- fallback links -->
 <!-- temporarily show overlay while i'm testing -->
 <div class="overlay show" name="show-toggle">
@@ -106,7 +105,7 @@
         </div>
     </div>
 </div>
-<div class="draggable glass chat show" name="drag-move">
+<div class="draggable glass chat show" name="drag-move" data-name="chat">
     <div class="drag-content" style="overflow: visible; position: relative; z-index: 0;">
         <div id="chat-content">
         </div>
@@ -114,7 +113,7 @@
     <div class="drag-header glass">
         <span>Chat</span>
         <div class="drag-btns">
-            <button class="glass" name="drag-close">
+            <button class="glass" name="drag-close" data-name="chat">
                 <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none" /><path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" /><path d="M10 10l4 4m0 -4l-4 4" /></svg>
             </button>
         </div>
@@ -143,7 +142,7 @@
         </div>
     </div>
 </div>
-<div class="draggable glass terminal show" name="drag-move">
+<div class="draggable glass terminal show" name="drag-move" data-name="terminal">
     <div name="drag-content" style="overflow: visible; position: relative; z-index: 99999999999999999699965;">
         <div id="terminal-content">
             <div class="terminal-row">
@@ -155,7 +154,7 @@
     <div class="drag-header glass">
         <span>Terminal</span>
         <div class="drag-btns">
-            <button class="glass" name="drag-close">
+            <button class="glass" name="drag-close" data-name="terminal">
                 <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none" /><path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" /><path d="M10 10l4 4m0 -4l-4 4" /></svg>
             </button>
         </div>
