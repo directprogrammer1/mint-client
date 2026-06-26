@@ -113,6 +113,7 @@ function bringToFront(win) {
     }
 
     win.style.zIndex = String(topZIndex);
+    document.querySelector(".menubar-wrapper").style.zIndex = String(topZIndex + 1);
 }
 
 function normalizeWindowZIndexes() {

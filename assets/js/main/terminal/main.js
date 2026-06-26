@@ -13,6 +13,13 @@ class MintTerminal {
         this.variables = {};
 
         this.prompt = "C:\\>";
+        
+        // Loop state
+        this.loopStack = [];
+
+        this.params = {
+            "cmd_logs": true,
+        }
     }
 
     resolveCommandInfo(commandText) {
@@ -75,6 +82,17 @@ class MintTerminal {
             commandInfo,
             realCommandName: rawCommand
         };
+    }
+
+    shouldLogCommand(commandName) {
+        const command = String(commandName || "").toLowerCase();
+        return Boolean(this.params && this.params.cmd_logs) || command === "log" || command === "params";
+    }
+
+    logCommandMessage(message, commandName) {
+        if (this.shouldLogCommand(commandName)) {
+            this.writeLines(message);
+        }
     }
 
     installPackage(PackageClass, options = {}) {
@@ -198,20 +216,49 @@ class MintTerminal {
             return "";
         }
 
-    const resolved = this.resolveCommandInfo(parsed.command);
+    const normalizedCommand = String(parsed.command).toLowerCase();
 
-    if (resolved.error) {
-        this.writeLines(resolved.error);
-        return "";
+    const isLoopEnd =
+        normalizedCommand === "endloop" ||
+        normalizedCommand === "loopend";
+
+    if (this.loopStack.length > 0) {
+        const currentLoop = this.loopStack[this.loopStack.length - 1];
+
+        // Preserve nested repeat/endloop blocks inside the current loop.
+        if (normalizedCommand === "repeat") {
+            currentLoop.nestedDepth++;
+            currentLoop.commands.push(commandSyntax);
+            return "";
+        }
+
+        if (isLoopEnd && currentLoop.nestedDepth > 0) {
+            currentLoop.nestedDepth--;
+            currentLoop.commands.push(commandSyntax);
+            return "";
+        }
+
+        if (!isLoopEnd) {
+            currentLoop.commands.push(commandSyntax);
+            return "";
+        }
     }
 
-    const commandInfo = resolved.commandInfo;
-    const realCommandName = resolved.realCommandName;
+        const resolved = this.resolveCommandInfo(parsed.command);
+
+        if (resolved.error) {
+            this.logCommandMessage(resolved.error, parsed.command);
+            return "";
+        }
+
+        const commandInfo = resolved.commandInfo;
+        const realCommandName = resolved.realCommandName;
 
         if (typeof commandInfo.argCount === "number") {
             if (commandInfo.argCount >= 0 && parsed.args.length !== commandInfo.argCount) {
-                this.writeLines(
-                    `[red]'${parsed.command}' expected ${commandInfo.argCount} arg(s), got ${parsed.args.length}.`
+                this.logCommandMessage(
+                    `[red]'${parsed.command}' expected ${commandInfo.argCount} arg(s), got ${parsed.args.length}.`,
+                    realCommandName
                 );
                 return "";
             }
@@ -221,8 +268,9 @@ class MintTerminal {
                 // Example: command key=value other=something
                 // This blocks random normal args.
                 if (parsed.args.length > 0) {
-                    this.writeLines(
-                        `[red]'${parsed.command}' only accepts key=value arguments.`
+                    this.logCommandMessage(
+                        `[red]'${parsed.command}' only accepts key=value arguments.`,
+                        realCommandName
                     );
                     return "";
                 }
@@ -232,14 +280,14 @@ class MintTerminal {
         const pkg = this.packages.get(commandInfo.packageName);
 
         if (!pkg) {
-            this.writeLines(`[red]Package not loaded: ${commandInfo.packageName}`);
+            this.logCommandMessage(`[red]Package not loaded: ${commandInfo.packageName}`, realCommandName);
             return "";
         }
 
         const fn = pkg[commandInfo.methodName];
 
         if (typeof fn !== "function") {
-            this.writeLines(`[red]Command function missing: ${commandInfo.methodName}`);
+            this.logCommandMessage(`[red]Command function missing: ${commandInfo.methodName}`, realCommandName);
             return "";
         }
 
@@ -257,13 +305,13 @@ class MintTerminal {
         try {
             const result = fn.call(pkg, context);
 
-            if (result !== undefined && result !== null && result !== "") {
+            if (this.shouldLogCommand(realCommandName) && result !== undefined && result !== null && result !== "") {
                 this.writeLines(result);
             }
 
             return result;
         } catch (err) {
-            this.writeLines(`[red] Error: ${err.message}`);
+            this.logCommandMessage(`[red] Error: ${err.message}`, realCommandName);
             console.error(err);
             return "";
         }
@@ -451,7 +499,7 @@ class MintTerminal {
                 try {
                     kwargs[key] = this.resolveArgumentToken(valueToken);
                 } catch (err) {
-                    this.writeLines(`[red]Expression error in '${key}': ${err.message}`);
+                    this.logCommandMessage(`[red]Expression error in '${key}': ${err.message}`, command);
                     return { command: "", args: [], kwargs: {} };
                 }
 
@@ -467,7 +515,7 @@ class MintTerminal {
             try {
                 args.push(this.resolveArgumentToken(token));
             } catch (err) {
-                this.writeLines(`[red]Expression error in arg: ${err.message}`);
+                this.logCommandMessage(`[red]Expression error in arg: ${err.message}`, command);
                 return { command: "", args: [], kwargs: {} };
             }
 
@@ -707,8 +755,28 @@ class MintTerminal {
     parseColorSegments(text) {
         const fragments = [];
         let currentColor = "";
+        let currentStyle = {
+            underline: false,
+            italic: false,
+            bold: false
+        };
         let buffer = "";
         let i = 0;
+
+        const pushFragment = () => {
+            if (!buffer.length) {
+                return;
+            }
+
+            fragments.push({
+                text: buffer,
+                color: currentColor,
+                underline: currentStyle.underline,
+                italic: currentStyle.italic,
+                bold: currentStyle.bold
+            });
+            buffer = "";
+        };
 
         while (i < text.length) {
             if (text[i] === "\\" && i + 1 < text.length) {
@@ -731,18 +799,27 @@ class MintTerminal {
                 const end = text.indexOf("]", i + 1);
 
                 if (end !== -1) {
-                    const colorValue = text.slice(i + 1, end);
+                    const code = text.slice(i + 1, end);
+                    const lowered = code.toLowerCase();
 
                     if (buffer.length) {
-                        fragments.push({
-                            text: buffer,
-                            color: currentColor
-                        });
-
-                        buffer = "";
+                        pushFragment();
                     }
 
-                    currentColor = colorValue || currentColor;
+                    if (lowered === "u") {
+                        currentStyle.underline = true;
+                    } else if (lowered === "i") {
+                        currentStyle.italic = true;
+                    } else if (lowered === "b") {
+                        currentStyle.bold = true;
+                    } else if (lowered === "r") {
+                        currentStyle.underline = false;
+                        currentStyle.italic = false;
+                        currentStyle.bold = false;
+                    } else {
+                        currentColor = code || currentColor;
+                    }
+
                     i = end + 1;
                     continue;
                 }
@@ -752,12 +829,7 @@ class MintTerminal {
             i += 1;
         }
 
-        if (buffer.length) {
-            fragments.push({
-                text: buffer,
-                color: currentColor
-            });
-        }
+        pushFragment();
 
         return fragments;
     }
@@ -780,6 +852,15 @@ class MintTerminal {
 
                     if (fragment.color) {
                         span.style.color = fragment.color;
+                    }
+                    if (fragment.underline) {
+                        span.style.textDecoration = "underline";
+                    }
+                    if (fragment.italic) {
+                        span.style.fontStyle = "italic";
+                    }
+                    if (fragment.bold) {
+                        span.style.fontWeight = "bold";
                     }
 
                     wrapper.appendChild(span);
@@ -829,7 +910,12 @@ class CorePackage {
         newvar: ["newvar", 1],
         setvar: ["setvar", 2],
         delvar: ["delvar", 1],
-        vars: ["listvars", 0]
+        vars: ["listvars", 0],
+
+        repeat: ["repeat", 1],
+        endloop: ["endloop", 0],
+
+        params: ["setparams", 2] // set param: name; value
     };
 
     constructor(terminal) {
@@ -846,6 +932,9 @@ class CorePackage {
             "[white]packages - [gray]List all currently installed packages",
             "[white]commands - [gray]List all current available internal and external commands.",
             "[white]version {package} - [gray]Writes version of selected package",
+            "\n / ----- Loops ----- /\n\n",
+            "[white]repeat {count} - [gray]Start a loop that will repeat following commands 'count' times",
+            "[white]loopend - [gray]End the current loop (matching the most recent repeat)",
             "\n / ----- Variables ----- /\n\n",
             "[white]newvar {varname} - [gray]Defines a new variable in memory. Note: spaces are automatically replaced with '_'.",
             "[white]setvar {varname, value} - [gray]Sets the value of a variable. Type is the type, such as int, str or other.",
@@ -897,11 +986,11 @@ class CorePackage {
             if (packageName === "default") {
                 lines.push("[#0f0]default commands\n\n");
             } else {
-                lines.push(`\n[cyan]'${packageName}' package\n\n`);
+                lines.push(`\n[cyan][u]'${packageName}'[r] package\n\n`);
             }
 
             commands.forEach(command => {
-                lines.push(`[yellow]${command}`);
+                lines.push(`[yellow][i]${command}`);
             });
 
             lines.push("");
@@ -919,13 +1008,13 @@ class CorePackage {
         const packageInstance = ctx.terminal.packages.get(packageName);
 
         if (!packageInstance) {
-            return `[red]No package named ${packageName} found.`;
+            return `[red]No package named [u]'${packageName}'[r] found.`;
         }
 
         const info = packageInstance.packageInfo || packageInstance.constructor.packageInfo;
 
         if (!info) {
-            return `[red]Package ${packageName} has no packageInfo.`;
+            return `[red]Package [u]'${packageName}'[r] has no packageInfo.`;
         }
 
         return `[yellow]${info.name} [white]is version [yellow]${info.version || "unknown"}`;
@@ -934,27 +1023,27 @@ class CorePackage {
         const normalized = ctx.args[0].replace(" ", "_");
 
         if (normalized in ctx.terminal.variables) {
-            return `[red]Variable named '${normalized}' already exists.`;
+            return `[red]Variable named [u]'${normalized}'[r] already exists.`;
         }
 
         ctx.terminal.variables[normalized] = "";
-        return `[#0f0]Variable '${normalized}' created.`;
+        return `[#0f0]Variable [u]'${normalized}'[r] created.`;
     }
     setvar(ctx) {
-        if (!(ctx.args[0] in ctx.terminal.variables)) return `[red]'${ctx.args[0]}' does not exist. Use newvar to create it.`;
+        if (!(ctx.args[0] in ctx.terminal.variables)) return `[red][u]'${ctx.args[0]}'[r] does not exist. Use newvar to create it.`;
 
         ctx.terminal.variables[ctx.args[0]] = ctx.args[1];
-        return `[#0f0]Variable '${ctx.args[0]}' assigned to value '${ctx.args[1]}'`;
+        return `[#0f0]Variable [u]'${ctx.args[0]}'[r] assigned to value [u]'${ctx.args[1]}'[r]`;
     }
     delvar(ctx) {
-        if (!ctx.args[0] in ctx.terminal.variables) return `'${ctx.args[0]}' does not exist. Use newvar to create it.`;
+        if (!ctx.args[0] in ctx.terminal.variables) return `[red][u]'${ctx.args[0]}'[r] does not exist. Use newvar to create it.`;
         if (ctx.args[0] === "all") {
             ctx.terminal.variables = {};
             return `[#0f0]All variables deleted.`;
         }
 
         delete ctx.terminal.variables[ctx.args[0]];
-        return `[#0f0]Variable '${ctx.args[0]}' deleted.`;
+        return `[#0f0]Variable [u]'${ctx.args[0]}'[r] deleted.`;
     }
     listvars(ctx) {
         const vars = ctx.terminal.variables;
@@ -972,6 +1061,69 @@ class CorePackage {
         return entries.map(([name, value]) => {
             return `[#0066ff]${name}: [white]${String(value).length > 0 ? String(value) : "[gray]null"}`;
         });
+    }
+
+    repeat(ctx) {
+        const originalCount = ctx.args[0];
+        let count = Number(originalCount);
+
+        // Check if count is a valid integer
+        if (!Number.isFinite(count) || !Number.isInteger(count)) {
+            const type = typeof originalCount;
+            return `[red]'repeat' argument 'count' must be an integer, got [u]${type}[r] instead.`;
+        }
+
+        // Check if count is positive
+        if (count <= 0) {
+            return `[red]'repeat' argument 'count' must be greater than 0, got [u]${count}[r] instead.`;
+        }
+
+        ctx.terminal.loopStack.push({
+            count: count,
+            remainingIterations: count,
+            nestedDepth: 0,
+            commands: []
+        });
+
+        return "";
+    }
+
+    endloop(ctx) {
+        if (ctx.terminal.loopStack.length === 0) {
+            return `[red]'endloop' cannot be used without a previous 'repeat' statement.`;
+        }
+
+        const loop = ctx.terminal.loopStack.pop();
+
+        for (let i = 0; i < loop.count; i++) {
+            loop.commands.forEach((command) => {
+                ctx.terminal.executeCommand(command);
+            });
+        }
+
+        return "";
+    }
+
+    setparams(ctx) {
+        const paramName = ctx.args[0];
+        let paramValue = ctx.args[1];
+
+        if (!ctx.terminal.params.hasOwnProperty(paramName)) {
+            return `[red]Unknown parameter: [u]${paramName}[r].`;
+        }
+
+        if (typeof paramValue === "string") {
+            const lowered = paramValue.toLowerCase();
+
+            if (lowered === "true") {
+                paramValue = true;
+            } else if (lowered === "false") {
+                paramValue = false;
+            }
+        }
+
+        ctx.terminal.params[paramName] = paramValue;
+        return `[#0f0]Parameter '[u]${paramName}[r]' set to '[u]${paramValue}[r]'.`;
     }
 }
 
@@ -994,15 +1146,15 @@ class SettingsPackage {
 
         if (setting === "clone-limit") {
             if (ctx.args.length !== 2) {
-                return `[red]'set clone-limit' expected 2 args, got ${ctx.args.length} instead.`
+                return `[red]'set clone-limit' expected 2 args, got [u]${ctx.args.length}[r] instead.`
             }
             const value = Number(ctx.args[1]);
 
             if (!Number.isFinite(value)) {
-                return "[red]Usage: set clone-limit value=500";
+                return `[red]Usage: set clone-limit value=500`;
             }
             if (value > 2000 && window.location.hostname === "scratch.mit.edu") {
-                return "[red]Max clones 2000 on Scratch for lag reasons"
+                return `[red]Max clones 2000 on Scratch for lag reasons`;
             }
 
             const input = document.getElementById("clonelimit");
@@ -1014,7 +1166,7 @@ class SettingsPackage {
             return `[white]Clone limit set to [yellow]${value}`;
         }
 
-        return `[red]Unknown setting: ${setting}`;
+        return `[red]Unknown setting: [u]${setting}[r]`;
     }
 }
 
@@ -1026,7 +1178,7 @@ class VmPackage {
         "version": "1.0.0",
     }
     static commands = {
-        "setvar": ["setVmVar", 3],
+        "setVmVar": ["setVmVar", 3],
         "setusername": ["setVmUser", 1],
         "username": ["getVmUser", 0]
     }

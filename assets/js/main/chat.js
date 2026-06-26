@@ -183,21 +183,6 @@ async function loadChatMessages() {
     }
 }
 
-const chatClose = document.querySelector('[name="drag-close"][data-name="chat"]');
-const chatWindow = document.querySelector('[name="drag-move"][data-name="chat"]');
-const chatBtn = document.getElementById("mint-chat-btn");
-
-chatClose.addEventListener("click", () => {
-    chatWindow.classList.remove("show");
-    chatBtn.classList.remove("enabled");
-});
-
-chatBtn.addEventListener("click", () => {
-    chatWindow.classList.add("show");
-    chatBtn.classList.add("enabled");
-    loadChatMessages();
-});
-
 const loadChatInterval = setInterval(loadChatMessages, 45000);
 
 

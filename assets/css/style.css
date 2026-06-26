@@ -1,14 +1,16 @@
 /* style.css */
 
 .overlay {
-    width: 100%;
-    height: 100%;
-    background: #ffffff02;
+    background: rgba(255, 255, 255, 0.021);
     font-family: "Manrope", sans-serif;
     color: var(--text);
     position: fixed;
-    inset: 0;
     flex: 1 1 0;
+    bottom: 60px;
+    top: 0;
+    left: 0;
+    right: 0;
+
     overflow: hidden;
     pointer-events: none;
 
@@ -55,6 +57,8 @@
     --glass-border: rgba(255, 255, 255, 0.05);
     --glass-highlight: rgba(255, 255, 255, 0.28);
     --glass-shadow: rgba(0, 0, 0, 0.22);
+
+    --scale: 1;
 }
 .glass {
     background:
@@ -72,7 +76,6 @@
 
     color: var(--text);
     padding: 12px;
-    gap: 5px;
     position: relative;
     gap: 10px;
     
@@ -115,11 +118,14 @@
     display: flex;
     flex-direction: row;
     align-items: center;
-    gap: 15px;
-    height: 20px;
+    gap: calc(15px * var(--sRcale));
+    height: calc(20px * var(--scale));
     background: var(--accent);
     border: 1px solid #99ccad57;
     color: var(--header) !important;
+
+    transition: width 0.3s ease, height 0.3s ease;
+    font-size: calc(14px * var(--scale));
 }
 .glass.header * {
     color: var(--header) !important;
@@ -128,8 +134,8 @@
     stroke: var(--header) !important;
 }
 button[name="minimax"] {
-    width: 30px;
-    height: 30px;
+    width: calc(30px * var(--scale));
+    height: calc(30px * var(--scale));
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -138,8 +144,8 @@ button[name="minimax"] {
     cursor: pointer;
 }
 button[name="minimax"] svg {
-    width: 22px;
-    height: 22px;
+    width: calc(22px * var(--scale));
+    height: calc(22px * var(--scale));
     margin: 0;
     padding: 0;
 }
@@ -181,20 +187,30 @@ label.glass * {
     height: 100%;
     padding: 10px;
 }
-.tab {
+
+.glass.tab {
     width: max-content;
     height: fit-content;
     box-sizing: border-box;
     gap: 0;
     position: relative;
+    overflow: hidden;
+    flex: 0 0 auto;
+
+    padding: calc(12px * var(--scale));
+    border-radius: calc(20px * var(--scale));
+    box-shadow:
+        0 calc(12px * var(--scale)) calc(40px * var(--scale)) var(--glass-shadow),
+        inset 0 1px 0 var(--glass-highlight),
+        inset 0 -1px 0 rgba(255,255,255,0.03);
 }
 
 .glass.body {
     display: none;
     flex-direction: column;
-    gap: 5px;
+    gap: calc(5px * var(--scale));
     overflow: hidden;
-    padding: 0 12.5px;
+    padding: 0 calc(12.5px * var(--scale));
     margin-top: 0;
     opacity: 0;
     max-height: 0;
@@ -212,9 +228,9 @@ label.glass * {
 .maximized .glass.body {
     display: flex;
     opacity: 1;
-    padding: 12.5px;
-    margin-top: 10px;
-    max-height: 320px;
+    padding: calc(12.5px * var(--scale));
+    margin-top: calc(10px * var(--scale));
+    max-height: calc(320px * var(--scale));
 }
 .glass.option {
     color: var(--text);
@@ -225,16 +241,16 @@ label.glass * {
     flex-direction: row;
     align-items: center;
     font-family: "Manrope";
-    font-size: 12px;
+    font-size: calc(12px * var(--scale));
     justify-content: space-between;
-    padding: 4px 15px;
+    padding: calc(4px * var(--scale)) calc(15px * var(--scale));
     white-space: nowrap;
     flex-shrink: 0;
 }
 .option input[type="checkbox"] {
     position: relative;
-    width: 43px;
-    height: 22px;
+    width: calc(43px * var(--scale));
+    height: calc(22px * var(--scale));
     appearance: none;
     border: 1px solid rgba(255,255,255,0.08);
     border-radius: 999px;
@@ -260,8 +276,8 @@ label.glass * {
     position: absolute;
     top: 2px;
     left: 2px;
-    width: 17px;
-    height: 17px;
+    width: calc(17px * var(--scale));
+    height: calc(17px * var(--scale));
     border-radius: 50%;
     background: linear-gradient(
         to bottom,
@@ -287,17 +303,17 @@ label.glass * {
 }
 
 .option input[type="checkbox"]:checked::before {
-    transform: translateX(21px);
+    transform: translateX(calc(21px * var(--scale)));
 }
 .option input[type="number"] {
     appearance: none;
     box-shadow: 0 0 10px rgba(0, 0, 0, 0.137);
-    width: 55px;
+    width: calc(55px * var(--scale));
     color: var(--text);
     font-family: "Consolas";
     transition: background 0.3s ease;
     border: 1px solid #eef6f121;
-    padding: 8px 10px;;
+    padding: calc(8px * var(--scale)) calc(10px * var(--scale));
     background: var(--glass-2);
 }
 .option input[type="number"]:focus {
@@ -309,6 +325,7 @@ label.glass * {
 .option input::placeholder {
     color: color-mix(in srgb, var(--text), transparent 40%);
     font-style: italic;
+    font-size: calc(12px * var(--scale));
 }
 .option input, .option input * {
     color: var(--text)
@@ -355,7 +372,7 @@ label.glass * {
     pointer-events: none;
 }
 input.glass[type="text"] {
-    width: 135px;
+    width: calc(135px * var(--scale));
     transition: background 0.3s ease, border 0.3s ease, color 0.3s ease;
     background: var(--glass-2);
 }
@@ -375,7 +392,7 @@ input.glass::placeholder {
     left: 10px;
     right: 10px;
     height: 20px;
-    z-index: 99999999;
+    z-index: 999999999;
     flex: 1;
 
     display: flex;
@@ -776,4 +793,7 @@ input.glass::placeholder {
 }
 .terminal-var {
     color: #0066ff !important;
+}
+.terminal-loop {
+    color: #ffb347 !important;
 }

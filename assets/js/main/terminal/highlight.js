@@ -15,6 +15,41 @@ cmdText.spellcheck = false;
 cmdText.style.whiteSpace = 'pre-wrap';
 cmdText.style.outline = 'none';
 
+function removeEmptyContinuationLine(event) {
+    if (event.key !== "Backspace") {
+        return false;
+    }
+
+    const text = readEditorText(cmdText);
+    const caretOffset = getCaretOffset(cmdText);
+
+    // Caret must be directly after a newline, meaning the current line is empty.
+    if (
+        caretOffset === 0 ||
+        text[caretOffset - 1] !== "\n"
+    ) {
+        return false;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const newText =
+        text.slice(0, caretOffset - 1) +
+        text.slice(caretOffset);
+
+    cmdText.innerHTML = highlightText(newText);
+
+    setCaretPosition(
+        cmdText,
+        caretOffset - 1
+    );
+
+    updateTerminalStartLines(newText);
+
+    return true;
+}
+
 function escapeHtml(value) {
     return value
         .replace(/&/g, '&amp;')
@@ -24,50 +59,135 @@ function escapeHtml(value) {
         .replace(/'/g, '&#39;');
 }
 
-function getTextOffset(root, node, offset) {
-    let chars = 0;
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
-    while (walker.nextNode()) {
-        const current = walker.currentNode;
-        if (current === node) {
-            return chars + offset;
+function readEditorText(element = cmdText) {
+    let text = "";
+
+    const visit = (node) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+            text += node.nodeValue || "";
+            return;
         }
-        chars += current.nodeValue.length;
-    }
-    return chars;
+
+        if (node.nodeType !== Node.ELEMENT_NODE) {
+            return;
+        }
+
+        if (node.tagName === "BR") {
+            // Ignore the extra BR used to make the final line editable.
+            if (node.dataset?.terminalSentinel === "true") {
+                return;
+            }
+
+            // Ignore filler BRs automatically created by contenteditable.
+            if (node.dataset?.terminalBreak !== "true") {
+                return;
+            }
+
+            text += "\n";
+            return;
+        }
+
+        node.childNodes.forEach(visit);
+    };
+
+    element.childNodes.forEach(visit);
+
+    return text
+        .replace(/\u00A0/g, " ")
+        .replace(/\r/g, "");
 }
 
 function getCaretOffset(element) {
     const selection = window.getSelection();
+
     if (!selection || selection.rangeCount === 0) {
         return 0;
     }
-    const range = selection.getRangeAt(0);
-    return getTextOffset(element, range.startContainer, range.startOffset);
+
+    const activeRange = selection.getRangeAt(0);
+
+    if (!element.contains(activeRange.startContainer)) {
+        return readEditorText(element).length;
+    }
+
+    const beforeCaret = activeRange.cloneRange();
+
+    beforeCaret.selectNodeContents(element);
+    beforeCaret.setEnd(
+        activeRange.startContainer,
+        activeRange.startOffset
+    );
+
+    const holder = document.createElement("div");
+    holder.appendChild(beforeCaret.cloneContents());
+
+    return readEditorText(holder).length;
 }
 
-function setCaretPosition(element, chars) {
-    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
-    let node = walker.nextNode();
-    let accumulated = 0;
-    while (node) {
-        const nextAccumulated = accumulated + node.nodeValue.length;
-        if (chars <= nextAccumulated) {
-            const range = document.createRange();
-            const selection = window.getSelection();
-            range.setStart(node, chars - accumulated);
-            range.collapse(true);
-            selection.removeAllRanges();
-            selection.addRange(range);
-            return;
+function setCaretPosition(element, requestedOffset) {
+    let remaining = Math.max(0, requestedOffset);
+    let target = null;
+
+    const search = (parent) => {
+        for (let index = 0; index < parent.childNodes.length; index++) {
+            const child = parent.childNodes[index];
+
+            if (child.nodeType === Node.TEXT_NODE) {
+                const length = (child.nodeValue || "").length;
+
+                if (remaining <= length) {
+                    target = {
+                        node: child,
+                        offset: remaining
+                    };
+
+                    return true;
+                }
+
+                remaining -= length;
+                continue;
+            }
+
+            if (child.nodeType !== Node.ELEMENT_NODE) {
+                continue;
+            }
+
+            if (child.dataset?.terminalSentinel === "true") {
+                continue;
+            }
+
+            if (child.tagName === "BR") {
+                // Ignore both the sentinel and browser-generated filler BRs.
+                if (
+                    child.dataset?.terminalSentinel === "true" ||
+                    child.dataset?.terminalBreak !== "true"
+                ) {
+                    continue;
+                }
+            }
+
+            if (search(child)) {
+                return true;
+            }
         }
-        accumulated = nextAccumulated;
-        node = walker.nextNode();
-    }
+
+        return false;
+    };
+
+    search(element);
+
     const range = document.createRange();
-    range.selectNodeContents(element);
-    range.collapse(false);
     const selection = window.getSelection();
+
+    if (target) {
+        range.setStart(target.node, target.offset);
+    } else {
+        range.selectNodeContents(element);
+        range.collapse(false);
+    }
+
+    range.collapse(true);
+
     selection.removeAllRanges();
     selection.addRange(range);
 }
@@ -321,6 +441,9 @@ function getHighlightClass(token, tokens) {
     }
 
     if (token.tokenIndex === 0) {
+        if (token.text === "repeat" || token.text === "endloop" || token.text === "loopend") {
+            return "terminal-loop";
+        }
         return "terminal-command";
     }
 
@@ -345,106 +468,341 @@ function getHighlightClass(token, tokens) {
     return "";
 }
 
-function highlightText(text) {
-    const lines = text.split("\n");
-
-    return lines
-        .map((line) => {
-            const tokens = tokenizeHighlightLine(line);
-
-            return tokens.map((token) => {
-                const escaped = escapeHtml(token.text);
-                const cls = getHighlightClass(token, tokens);
-
-                if (!cls) {
-                    return escaped;
-                }
-
-                return `<span class="${escapeHtml(cls)}">${escaped}</span>`;
-            }).join("");
-        })
-        .join("<br>");
+function getTerminalStart() {
+    return document.getElementById("terminal-start");
 }
 
-function updateHighlight() {
-    const text = cmdText.textContent.replace(/\u00A0/g, ' ');
-    const caretOffset = getCaretOffset(cmdText);
-    cmdText.innerHTML = highlightText(text);
-    setCaretPosition(cmdText, Math.min(caretOffset, text.length));
-}
+function getPromptText() {
+    const terminalStart = getTerminalStart();
 
-cmdText.addEventListener('input', updateHighlight);
-cmdText.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-        event.preventDefault();
+    if (!terminalStart) {
+        return window.terminal?.prompt || "C:\\>";
     }
+
+    // Save the original prompt before we add <br> and dots.
+    if (!terminalStart.dataset.basePrompt) {
+        terminalStart.dataset.basePrompt =
+            terminalStart.textContent || window.terminal?.prompt || "C:\\>";
+    }
+
+    return terminalStart.dataset.basePrompt;
+}
+
+function getContinuationMarker() {
+    return ".".repeat(getPromptText().length);
+}
+
+function updateTerminalStartLines(text = readEditorText(cmdText)) {
+    const terminalStart = getTerminalStart();
+
+    if (!terminalStart) {
+        return;
+    }
+
+    const promptText = getPromptText();
+    const lineCount = text.split("\n").length;
+
+    // Remove the existing prompt and continuation markers.
+    terminalStart.replaceChildren(
+        document.createTextNode(promptText)
+    );
+
+    // Add one <br> and marker for every extra command line.
+    for (let line = 1; line < lineCount; line++) {
+        terminalStart.appendChild(
+            document.createElement("br")
+        );
+
+        terminalStart.appendChild(
+            document.createTextNode(
+                getContinuationMarker()
+            )
+        );
+    }
+}
+
+function splitContinuationLine(line) {
+    return {
+        prefix: "",
+        commandText: line
+    };
+}
+
+function highlightCommandLine(line) {
+    const tokens = tokenizeHighlightLine(line);
+
+    return tokens.map((token) => {
+        const escaped = escapeHtml(token.text);
+        const className = getHighlightClass(token, tokens);
+
+        if (!className) {
+            return escaped;
+        }
+
+        return `<span class="${escapeHtml(className)}">${escaped}</span>`;
+    }).join("");
+}
+
+function highlightText(text) {
+    const highlighted = text
+        .split("\n")
+        .map((line) => highlightCommandLine(line))
+        .join('<br data-terminal-break="true">');
+
+    if (text.endsWith("\n")) {
+        return highlighted + '<br data-terminal-sentinel="true">';
+    }
+
+    return highlighted;
+}
+
+function updateHighlight(forcedCaretOffset = null) {
+    const text = readEditorText(cmdText);
+
+    const caretOffset =
+        forcedCaretOffset ?? getCaretOffset(cmdText);
+
+    cmdText.innerHTML = highlightText(text);
+
+    setCaretPosition(
+        cmdText,
+        Math.min(caretOffset, text.length)
+    );
+
+    updateTerminalStartLines(text);
+}
+
+function insertTextAtCaret(text) {
+    const selection = window.getSelection();
+
+    if (!selection || selection.rangeCount === 0) {
+        cmdText.appendChild(document.createTextNode(text));
+        updateHighlight(readEditorText(cmdText).length);
+        return;
+    }
+
+    const range = selection.getRangeAt(0);
+
+    if (!cmdText.contains(range.startContainer)) {
+        cmdText.focus({
+            preventScroll: true
+        });
+
+        setCaretPosition(
+            cmdText,
+            readEditorText(cmdText).length
+        );
+
+        insertTextAtCaret(text);
+        return;
+    }
+
+    const originalOffset = getCaretOffset(cmdText);
+
+    range.deleteContents();
+
+    const textNode = document.createTextNode(text);
+    range.insertNode(textNode);
+
+    range.setStartAfter(textNode);
+    range.collapse(true);
+
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    updateHighlight(originalOffset + text.length);
+}
+
+function getInputCommands(text = readEditorText(cmdText)) {
+    return text
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+}
+
+function getCommandName(commandText) {
+    const tokens = terminal.tokenizeCommand(commandText);
+
+    if (tokens.length === 0) {
+        return "";
+    }
+
+    return String(
+        terminal.resolveNormalToken(tokens[0])
+    ).toLowerCase();
+}
+
+function getUnclosedLoopDepth(commands) {
+    let depth = 0;
+
+    commands.forEach((commandText) => {
+        const commandName = getCommandName(commandText);
+
+        if (commandName === "repeat") {
+            depth++;
+            return;
+        }
+
+        if (
+            commandName === "endloop" ||
+            commandName === "loopend"
+        ) {
+            depth = Math.max(0, depth - 1);
+        }
+    });
+
+    return depth;
+}
+
+function insertContinuationLine() {
+    insertTextAtCaret("\n");
+}
+
+cmdText.addEventListener("input", () => {
+    updateHighlight();
 });
 
-cmdText.addEventListener('paste', (event) => {
+cmdText.addEventListener("paste", (event) => {
     event.preventDefault();
-    const text = (event.clipboardData || window.clipboardData).getData('text');
-    document.execCommand('insertText', false, text);
+
+    const pastedText = (
+        event.clipboardData ||
+        window.clipboardData
+    )
+        .getData("text")
+        .replace(/\r\n?/g, "\n");
+
+    insertTextAtCaret(pastedText);
 });
 
-
-cmdText.addEventListener("dragstart", (e) => {
-    e.preventDefault();
+cmdText.addEventListener("dragstart", (event) => {
+    event.preventDefault();
 });
 
-cmdText.addEventListener("drop", (e) => {
-    e.preventDefault();
+cmdText.addEventListener("drop", (event) => {
+    event.preventDefault();
 });
 
-cmdText.addEventListener("dragover", (e) => {
-    e.preventDefault();
+cmdText.addEventListener("dragover", (event) => {
+    event.preventDefault();
 });
 
-function writeCommandFromInput() {
-    const inputRow = document.querySelector("#terminal-content .terminal-row");
-    const terminalStart = document.getElementById("terminal-start");
-    const cmdText = document.getElementById("cmd-text");
+function writeCommandFromInput(
+    text = readEditorText(cmdText)
+) {
+    const inputRow = document.querySelector(
+        "#terminal-content .terminal-row"
+    );
 
-    if (!inputRow || !terminalStart || !cmdText) return;
+    if (!inputRow) {
+        return;
+    }
 
-    const line = document.createElement("div");
-    line.className = "terminal-output-line terminal-command-line";
+    const wrapper = document.createElement("div");
 
-    const promptSpan = document.createElement("span");
-    promptSpan.className = "terminal-prompt-output";
-    promptSpan.textContent = terminalStart.textContent;
+    wrapper.className =
+        "terminal-output-line terminal-command-line";
 
-    const commandSpan = document.createElement("span");
-    commandSpan.className = "terminal-command-output";
+    text.split("\n").forEach((line, lineIndex) => {
+        if (lineIndex > 0) {
+            wrapper.appendChild(
+                document.createElement("br")
+            );
+        }
 
-    // preserves the highlighted spans inside cmdText
-    commandSpan.innerHTML = cmdText.innerHTML;
+        const commandText = line;
 
-    line.appendChild(promptSpan);
-    line.appendChild(commandSpan);
+        const prefixSpan =
+            document.createElement("span");
 
-    terminalContent.insertBefore(line, inputRow);
-    terminalContent.scrollTop = terminalContent.scrollHeight;
+        if (lineIndex === 0) {
+            prefixSpan.className =
+                "terminal-prompt-output";
+
+            prefixSpan.textContent =
+                getPromptText();
+        } else {
+            prefixSpan.className =
+                "terminal-alignment-dots";
+
+            prefixSpan.textContent =
+                getContinuationMarker();
+        }
+
+        wrapper.appendChild(prefixSpan);
+
+        const commandSpan =
+            document.createElement("span");
+
+        commandSpan.className =
+            "terminal-command-output";
+
+        commandSpan.innerHTML =
+            highlightCommandLine(commandText);
+
+        wrapper.appendChild(commandSpan);
+    });
+
+    terminalContent.insertBefore(
+        wrapper,
+        inputRow
+    );
+
+    terminalContent.scrollTop =
+        terminalContent.scrollHeight;
 }
 
 function runCommand(command) {
     return terminal.executeCommand(command);
 }
 
-function handleEnterKey(e) {
-    if (e.key !== "Enter") return;
+function handleEnterKey(event) {
+    if (event.key !== "Enter") {
+        return;
+    }
 
-    e.preventDefault();
+    event.preventDefault();
+    event.stopPropagation();
 
-    const command = cmdText.textContent.trim();
+    // Shift+Enter always inserts another command line.
+    if (event.shiftKey) {
+        insertContinuationLine();
+        return;
+    }
 
-    if (command.length === 0) return;
+    const fullText = readEditorText(cmdText);
+    const commands = getInputCommands(fullText);
 
-    writeCommandFromInput(); // preserve coloring
+    if (commands.length === 0) {
+        return;
+    }
 
-    cmdText.textContent = "";
-    runCommand(command);
+    // Normal Enter also creates a new line while a repeat
+    // block is waiting for its matching endloop.
+    if (getUnclosedLoopDepth(commands) > 0) {
+        insertContinuationLine();
+        return;
+    }
+
+    writeCommandFromInput(fullText);
+
+    commands.forEach((command) => {
+        runCommand(command);
+    });
+
+    cmdText.innerHTML = "";
+
+    updateTerminalStartLines("");
+
+    cmdText.focus({
+        preventScroll: true
+    });
 }
 
-cmdText.addEventListener("keydown", (e) => {
-    handleEnterKey(e);
+cmdText.addEventListener("keydown", (event) => {
+    if (removeEmptyContinuationLine(event)) {
+        return;
+    }
+
+    handleEnterKey(event);
 });

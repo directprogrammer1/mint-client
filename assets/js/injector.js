@@ -75,7 +75,7 @@ log("Running injector...", "info");
 function injectHead(text) { document.head.insertAdjacentHTML("afterbegin", text); }
 
 injectHead('<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Manrope">');
-injectHead('<link rel="stylesheet" href="https://directprogrammer1.github.io/mint-client/assets/css/style.css">');
+injectHead(window.location.hostname === "127.0.0.1" ? '<link rel="stylesheet" href="/assets/css/style.css">' : '<link rel="stylesheet" href="https://directprogrammer1.github.io/mint-client/assets/css/style.css">');
 
 document.title = `Mint | ${document.title}`;
 
